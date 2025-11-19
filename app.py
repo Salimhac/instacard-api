@@ -6,9 +6,20 @@ import uuid
 from sqlalchemy import create_engine, Column, Integer, String, Float, Text, Boolean, TIMESTAMP
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
+from imagekitio import ImageKit
+from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
 
 app = Flask(__name__)
 CORS(app)
+
+# -------------------------------
+# IMAGEKIT CONFIGURATION
+# -------------------------------
+imagekit = ImageKit(
+    private_key=os.getenv('IMAGEKIT_PRIVATE_KEY'),
+    public_key=os.getenv('IMAGEKIT_PUBLIC_KEY'),
+    url_endpoint=os.getenv('IMAGEKIT_URL_ENDPOINT')
+)
 
 # -------------------------------
 # DATABASE SETUP (POSTGRES)
@@ -45,7 +56,7 @@ class Profile(Base):
     portfolio4 = Column(String)
     portfolio5 = Column(String)
     is_public = Column(Boolean, default=True)
-    delete_code = Column(String, unique=True, nullable=False)  # Added delete code field
+    delete_code = Column(String, unique=True, nullable=False)
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
 
@@ -75,15 +86,69 @@ def profile_to_dict(profile):
         "portfolio4": profile.portfolio4,
         "portfolio5": profile.portfolio5,
         "is_public": profile.is_public,
-        "delete_code": profile.delete_code,  # Include delete code in response
+        "delete_code": profile.delete_code,
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
     }
 
 # -------------------------------
-# ROUTES
+# IMAGE UPLOAD ENDPOINT
 # -------------------------------
+@app.route('/api/upload', methods=['POST'])
+def upload_image():
+    try:
+        if 'image' not in request.files:
+            return jsonify({'error': 'No file uploaded'}), 400
 
+        file = request.files['image']
+        
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+
+        # Validate file type
+        allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}
+        if not ('.' in file.filename and 
+                file.filename.rsplit('.', 1)[1].lower() in allowed_extensions):
+            return jsonify({'error': 'Invalid file type. Allowed: PNG, JPG, JPEG, GIF, WEBP, BMP'}), 400
+
+        # Validate file size (5MB max)
+        file.seek(0, os.SEEK_END)
+        file_length = file.tell()
+        file.seek(0)
+        
+        if file_length > 5 * 1024 * 1024:  # 5MB
+            return jsonify({'error': 'File size too large. Maximum 5MB allowed.'}), 400
+
+        # Generate unique filename
+        file_extension = file.filename.rsplit('.', 1)[1].lower()
+        unique_filename = f"profile_{uuid.uuid4().hex[:8]}.{file_extension}"
+
+        # Upload to ImageKit
+        upload_options = UploadFileRequestOptions(
+            use_unique_file_name=False,
+            folder="/instacard-profiles",
+            tags=["profile", "user-upload"]
+        )
+
+        result = imagekit.upload_file(
+            file=file.read(),
+            file_name=unique_filename,
+            options=upload_options
+        )
+
+        return jsonify({
+            'url': result.response.url,
+            'fileId': result.response.file_id,
+            'message': 'Image uploaded successfully'
+        })
+
+    except Exception as e:
+        print(f"Upload error: {str(e)}")
+        return jsonify({'error': 'Failed to upload image'}), 500
+
+# -------------------------------
+# PROFILE ROUTES
+# -------------------------------
 @app.route('/api/profiles', methods=['GET'])
 def get_profiles():
     try:
@@ -124,7 +189,6 @@ def get_profiles():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/api/profiles/<int:profile_id>', methods=['GET'])
 def get_profile(profile_id):
     try:
@@ -139,7 +203,6 @@ def get_profile(profile_id):
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/profiles', methods=['POST'])
 def create_profile():
@@ -156,7 +219,7 @@ def create_profile():
         if existing:
             return jsonify({'error': 'Username already exists'}), 409
 
-        # Generate unique delete code (similar to Node.js version)
+        # Generate unique delete code
         delete_code = str(uuid.uuid4())
 
         profile = Profile(
@@ -177,7 +240,7 @@ def create_profile():
             portfolio4=data.get('portfolio4'),
             portfolio5=data.get('portfolio5'),
             is_public=data.get('isPublic', True),
-            delete_code=delete_code  # Add delete code
+            delete_code=delete_code
         )
 
         db.add(profile)
@@ -187,13 +250,12 @@ def create_profile():
 
         return jsonify({
             'id': profile.id, 
-            'delete_code': delete_code,  # Send delete code to user (important!)
+            'delete_code': delete_code,
             'message': 'Profile created successfully'
         }), 201
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/profiles/<int:profile_id>', methods=['PUT'])
 def update_profile(profile_id):
@@ -222,7 +284,6 @@ def update_profile(profile_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/api/profiles/<int:profile_id>', methods=['DELETE'])
 def delete_profile(profile_id):
     try:
@@ -239,7 +300,7 @@ def delete_profile(profile_id):
         if not profile:
             return jsonify({'error': 'Profile not found'}), 404
 
-        # Verify deletion code (similar to Node.js version)
+        # Verify deletion code
         if profile.delete_code != delete_code:
             return jsonify({'error': 'Invalid deletion code'}), 403
 
@@ -252,16 +313,25 @@ def delete_profile(profile_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
+# -------------------------------
+# UTILITY ROUTES
+# -------------------------------
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
+@app.route('/api/imagekit/auth', methods=['GET'])
+def imagekit_auth():
+    """Optional: For client-side ImageKit uploads"""
+    try:
+        auth_params = imagekit.get_authentication_parameters()
+        return jsonify(auth_params)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/')
 def root():
     return jsonify({'message': 'Welcome to InstaCard API', 'status': 'running'})
-
 
 if __name__ == '__main__':
     print("Starting InstaCard API server...")
