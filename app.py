@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
 from imagekitio import ImageKit
 from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
+from dotenv import load_dotenv
 
 app = Flask(__name__)
 CORS(app)
