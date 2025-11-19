@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime
 import os
+import uuid
 from sqlalchemy import create_engine, Column, Integer, String, Float, Text, Boolean, TIMESTAMP
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
@@ -44,6 +45,7 @@ class Profile(Base):
     portfolio4 = Column(String)
     portfolio5 = Column(String)
     is_public = Column(Boolean, default=True)
+    delete_code = Column(String, unique=True, nullable=False)  # Added delete code field
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
 
@@ -73,6 +75,7 @@ def profile_to_dict(profile):
         "portfolio4": profile.portfolio4,
         "portfolio5": profile.portfolio5,
         "is_public": profile.is_public,
+        "delete_code": profile.delete_code,  # Include delete code in response
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
     }
@@ -148,10 +151,13 @@ def create_profile():
 
         db = SessionLocal()
 
-        # check username exists
+        # Check if username exists
         existing = db.query(Profile).filter(Profile.username == data['username']).first()
         if existing:
             return jsonify({'error': 'Username already exists'}), 409
+
+        # Generate unique delete code (similar to Node.js version)
+        delete_code = str(uuid.uuid4())
 
         profile = Profile(
             username=data['username'],
@@ -170,7 +176,8 @@ def create_profile():
             portfolio3=data.get('portfolio3'),
             portfolio4=data.get('portfolio4'),
             portfolio5=data.get('portfolio5'),
-            is_public=data.get('isPublic', True)
+            is_public=data.get('isPublic', True),
+            delete_code=delete_code  # Add delete code
         )
 
         db.add(profile)
@@ -178,7 +185,11 @@ def create_profile():
         db.refresh(profile)
         db.close()
 
-        return jsonify({'id': profile.id, 'message': 'Profile created successfully'}), 201
+        return jsonify({
+            'id': profile.id, 
+            'delete_code': delete_code,  # Send delete code to user (important!)
+            'message': 'Profile created successfully'
+        }), 201
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -194,7 +205,7 @@ def update_profile(profile_id):
         if not profile:
             return jsonify({'error': 'Profile not found'}), 404
 
-        # update all fields
+        # Update all fields (excluding delete_code for security)
         for field in [
             'username', 'profession', 'skills', 'hourlyRate', 'bio', 'photo',
             'github', 'instagram', 'tiktok', 'linkedin', 'whatsapp',
@@ -215,11 +226,22 @@ def update_profile(profile_id):
 @app.route('/api/profiles/<int:profile_id>', methods=['DELETE'])
 def delete_profile(profile_id):
     try:
+        data = request.get_json()
+        
+        if not data or 'delete_code' not in data:
+            return jsonify({'error': 'Deletion code is required'}), 400
+
+        delete_code = data['delete_code']
+
         db = SessionLocal()
         profile = db.query(Profile).filter(Profile.id == profile_id).first()
 
         if not profile:
             return jsonify({'error': 'Profile not found'}), 404
+
+        # Verify deletion code (similar to Node.js version)
+        if profile.delete_code != delete_code:
+            return jsonify({'error': 'Invalid deletion code'}), 403
 
         db.delete(profile)
         db.commit()
