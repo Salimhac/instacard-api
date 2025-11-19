@@ -13,6 +13,8 @@ CORS(app)
 # DATABASE SETUP (POSTGRES)
 # -------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL")  # Render env variable
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is not set!")
 
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -48,6 +50,32 @@ class Profile(Base):
 # Create table if not exists
 Base.metadata.create_all(bind=engine)
 
+# -------------------------------
+# HELPER: serialize profile to JSON
+# -------------------------------
+def profile_to_dict(profile):
+    return {
+        "id": profile.id,
+        "username": profile.username,
+        "profession": profile.profession,
+        "skills": profile.skills,
+        "hourly_rate": profile.hourly_rate,
+        "bio": profile.bio,
+        "photo": profile.photo,
+        "github": profile.github,
+        "instagram": profile.instagram,
+        "tiktok": profile.tiktok,
+        "linkedin": profile.linkedin,
+        "whatsapp": profile.whatsapp,
+        "portfolio1": profile.portfolio1,
+        "portfolio2": profile.portfolio2,
+        "portfolio3": profile.portfolio3,
+        "portfolio4": profile.portfolio4,
+        "portfolio5": profile.portfolio5,
+        "is_public": profile.is_public,
+        "created_at": profile.created_at.isoformat() if profile.created_at else None,
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+    }
 
 # -------------------------------
 # ROUTES
@@ -88,13 +116,10 @@ def get_profiles():
         profiles = query.all()
         db.close()
 
-        return jsonify([{
-            **p.__dict__
-        } for p in profiles])
+        return jsonify([profile_to_dict(p) for p in profiles])
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
 
 
 @app.route('/api/profiles/<int:profile_id>', methods=['GET'])
@@ -107,11 +132,10 @@ def get_profile(profile_id):
         if not profile:
             return jsonify({'error': 'Profile not found'}), 404
 
-        return jsonify(profile.__dict__)
+        return jsonify(profile_to_dict(profile))
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
 
 
 @app.route('/api/profiles', methods=['POST'])
@@ -160,7 +184,6 @@ def create_profile():
         return jsonify({'error': str(e)}), 500
 
 
-
 @app.route('/api/profiles/<int:profile_id>', methods=['PUT'])
 def update_profile(profile_id):
     try:
@@ -189,7 +212,6 @@ def update_profile(profile_id):
         return jsonify({'error': str(e)}), 500
 
 
-
 @app.route('/api/profiles/<int:profile_id>', methods=['DELETE'])
 def delete_profile(profile_id):
     try:
@@ -209,10 +231,14 @@ def delete_profile(profile_id):
         return jsonify({'error': str(e)}), 500
 
 
-
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+
+
+@app.route('/')
+def root():
+    return jsonify({'message': 'Welcome to InstaCard API', 'status': 'running'})
 
 
 if __name__ == '__main__':
