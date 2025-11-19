@@ -1,255 +1,220 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
-import json
 from datetime import datetime
 import os
+from sqlalchemy import create_engine, Column, Integer, String, Float, Text, Boolean, TIMESTAMP
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.sql import func
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
-# Database setup
-def init_db():
-    conn = sqlite3.connect('freelancers.db')
-    c = conn.cursor()
-    
-    # Create profiles table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS profiles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            profession TEXT,
-            skills TEXT,
-            hourly_rate REAL,
-            bio TEXT,
-            photo TEXT,
-            github TEXT,
-            instagram TEXT,
-            tiktok TEXT,
-            linkedin TEXT,
-            whatsapp TEXT,
-            portfolio1 TEXT,
-            portfolio2 TEXT,
-            portfolio3 TEXT,
-            portfolio4 TEXT,
-            portfolio5 TEXT,
-            is_public BOOLEAN DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+# -------------------------------
+# DATABASE SETUP (POSTGRES)
+# -------------------------------
+DATABASE_URL = os.getenv("DATABASE_URL")  # Render env variable
 
-# Database connection helper
-def get_db_connection():
-    conn = sqlite3.connect('freelancers.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+engine = create_engine(DATABASE_URL, echo=False)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-# Routes
+# -------------------------------
+# MODEL
+# -------------------------------
+class Profile(Base):
+    __tablename__ = "profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, nullable=False)
+    profession = Column(String)
+    skills = Column(Text)
+    hourly_rate = Column(Float)
+    bio = Column(Text)
+    photo = Column(String)
+    github = Column(String)
+    instagram = Column(String)
+    tiktok = Column(String)
+    linkedin = Column(String)
+    whatsapp = Column(String)
+    portfolio1 = Column(String)
+    portfolio2 = Column(String)
+    portfolio3 = Column(String)
+    portfolio4 = Column(String)
+    portfolio5 = Column(String)
+    is_public = Column(Boolean, default=True)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+
+# Create table if not exists
+Base.metadata.create_all(bind=engine)
+
+
+# -------------------------------
+# ROUTES
+# -------------------------------
+
 @app.route('/api/profiles', methods=['GET'])
 def get_profiles():
     try:
         search = request.args.get('search', '')
         profession = request.args.get('profession', '')
         sort = request.args.get('sort', 'newest')
-        
-        conn = get_db_connection()
-        query = 'SELECT * FROM profiles WHERE is_public = 1'
-        params = []
-        
+
+        db = SessionLocal()
+        query = db.query(Profile).filter(Profile.is_public == True)
+
         if search:
-            query += ' AND (username LIKE ? OR bio LIKE ? OR skills LIKE ? OR profession LIKE ?)'
-            search_term = f'%{search}%'
-            params.extend([search_term, search_term, search_term, search_term])
-        
+            like = f"%{search}%"
+            query = query.filter(
+                (Profile.username.ilike(like)) |
+                (Profile.bio.ilike(like)) |
+                (Profile.skills.ilike(like)) |
+                (Profile.profession.ilike(like))
+            )
+
         if profession:
-            query += ' AND profession = ?'
-            params.append(profession)
-        
+            query = query.filter(Profile.profession == profession)
+
         # Sorting
         if sort == 'newest':
-            query += ' ORDER BY created_at DESC'
+            query = query.order_by(Profile.created_at.desc())
         elif sort == 'oldest':
-            query += ' ORDER BY created_at ASC'
+            query = query.order_by(Profile.created_at.asc())
         elif sort == 'rate-high':
-            query += ' ORDER BY hourly_rate DESC NULLS LAST'
+            query = query.order_by(Profile.hourly_rate.desc())
         elif sort == 'rate-low':
-            query += ' ORDER BY hourly_rate ASC NULLS LAST'
-        
-        profiles = conn.execute(query, params).fetchall()
-        conn.close()
-        
-        # Convert to list of dicts
-        profiles_list = [dict(profile) for profile in profiles]
-        return jsonify(profiles_list)
-    
+            query = query.order_by(Profile.hourly_rate.asc())
+
+        profiles = query.all()
+        db.close()
+
+        return jsonify([{
+            **p.__dict__
+        } for p in profiles])
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
 
 @app.route('/api/profiles/<int:profile_id>', methods=['GET'])
 def get_profile(profile_id):
     try:
-        conn = get_db_connection()
-        profile = conn.execute('SELECT * FROM profiles WHERE id = ?', (profile_id,)).fetchone()
-        conn.close()
-        
-        if profile is None:
+        db = SessionLocal()
+        profile = db.query(Profile).filter(Profile.id == profile_id).first()
+        db.close()
+
+        if not profile:
             return jsonify({'error': 'Profile not found'}), 404
-        
-        return jsonify(dict(profile))
-    
+
+        return jsonify(profile.__dict__)
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
 
 @app.route('/api/profiles', methods=['POST'])
 def create_profile():
     try:
         data = request.get_json()
-        
-        # Validate required fields
+
         if not data.get('username') or not data.get('bio'):
             return jsonify({'error': 'Username and bio are required'}), 400
-        
-        conn = get_db_connection()
-        
-        # Check if profile already exists (by username)
-        existing = conn.execute(
-            'SELECT id FROM profiles WHERE username = ?', 
-            (data['username'],)
-        ).fetchone()
-        
+
+        db = SessionLocal()
+
+        # check username exists
+        existing = db.query(Profile).filter(Profile.username == data['username']).first()
         if existing:
             return jsonify({'error': 'Username already exists'}), 409
-        
-        # Insert new profile
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO profiles (
-                username, profession, skills, hourly_rate, bio, photo,
-                github, instagram, tiktok, linkedin, whatsapp,
-                portfolio1, portfolio2, portfolio3, portfolio4, portfolio5, is_public
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            data['username'],
-            data.get('profession'),
-            data.get('skills'),
-            data.get('hourlyRate'),
-            data['bio'],
-            data.get('photo'),
-            data.get('github'),
-            data.get('instagram'),
-            data.get('tiktok'),
-            data.get('linkedin'),
-            data.get('whatsapp'),
-            data.get('portfolio1'),
-            data.get('portfolio2'),
-            data.get('portfolio3'),
-            data.get('portfolio4'),
-            data.get('portfolio5'),
-            data.get('isPublic', True)
-        ))
-        
-        profile_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'id': profile_id,
-            'message': 'Profile created successfully'
-        }), 201
-    
+
+        profile = Profile(
+            username=data['username'],
+            profession=data.get('profession'),
+            skills=data.get('skills'),
+            hourly_rate=data.get('hourlyRate'),
+            bio=data['bio'],
+            photo=data.get('photo'),
+            github=data.get('github'),
+            instagram=data.get('instagram'),
+            tiktok=data.get('tiktok'),
+            linkedin=data.get('linkedin'),
+            whatsapp=data.get('whatsapp'),
+            portfolio1=data.get('portfolio1'),
+            portfolio2=data.get('portfolio2'),
+            portfolio3=data.get('portfolio3'),
+            portfolio4=data.get('portfolio4'),
+            portfolio5=data.get('portfolio5'),
+            is_public=data.get('isPublic', True)
+        )
+
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+        db.close()
+
+        return jsonify({'id': profile.id, 'message': 'Profile created successfully'}), 201
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
 
 @app.route('/api/profiles/<int:profile_id>', methods=['PUT'])
 def update_profile(profile_id):
     try:
+        db = SessionLocal()
         data = request.get_json()
-        
-        conn = get_db_connection()
-        
-        # Check if profile exists
-        existing = conn.execute(
-            'SELECT id FROM profiles WHERE id = ?', 
-            (profile_id,)
-        ).fetchone()
-        
-        if not existing:
+
+        profile = db.query(Profile).filter(Profile.id == profile_id).first()
+        if not profile:
             return jsonify({'error': 'Profile not found'}), 404
-        
-        # Update profile
-        conn.execute('''
-            UPDATE profiles SET
-                username = ?, profession = ?, skills = ?, hourly_rate = ?, bio = ?, photo = ?,
-                github = ?, instagram = ?, tiktok = ?, linkedin = ?, whatsapp = ?,
-                portfolio1 = ?, portfolio2 = ?, portfolio3 = ?, portfolio4 = ?, portfolio5 = ?,
-                is_public = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        ''', (
-            data.get('username'),
-            data.get('profession'),
-            data.get('skills'),
-            data.get('hourlyRate'),
-            data.get('bio'),
-            data.get('photo'),
-            data.get('github'),
-            data.get('instagram'),
-            data.get('tiktok'),
-            data.get('linkedin'),
-            data.get('whatsapp'),
-            data.get('portfolio1'),
-            data.get('portfolio2'),
-            data.get('portfolio3'),
-            data.get('portfolio4'),
-            data.get('portfolio5'),
-            data.get('isPublic', True),
-            profile_id
-        ))
-        
-        conn.commit()
-        conn.close()
-        
+
+        # update all fields
+        for field in [
+            'username', 'profession', 'skills', 'hourlyRate', 'bio', 'photo',
+            'github', 'instagram', 'tiktok', 'linkedin', 'whatsapp',
+            'portfolio1', 'portfolio2', 'portfolio3', 'portfolio4', 'portfolio5', 'isPublic'
+        ]:
+            if field in data:
+                setattr(profile, field if field != 'hourlyRate' else 'hourly_rate', data[field])
+
+        db.commit()
+        db.close()
+
         return jsonify({'message': 'Profile updated successfully'})
-    
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
 
 @app.route('/api/profiles/<int:profile_id>', methods=['DELETE'])
 def delete_profile(profile_id):
     try:
-        conn = get_db_connection()
-        
-        # Check if profile exists
-        existing = conn.execute(
-            'SELECT id FROM profiles WHERE id = ?', 
-            (profile_id,)
-        ).fetchone()
-        
-        if not existing:
+        db = SessionLocal()
+        profile = db.query(Profile).filter(Profile.id == profile_id).first()
+
+        if not profile:
             return jsonify({'error': 'Profile not found'}), 404
-        
-        conn.execute('DELETE FROM profiles WHERE id = ?', (profile_id,))
-        conn.commit()
-        conn.close()
-        
+
+        db.delete(profile)
+        db.commit()
+        db.close()
+
         return jsonify({'message': 'Profile deleted successfully'})
-    
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# Health check
+
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
+
 if __name__ == '__main__':
-    # Initialize database
-    init_db()
-    
-    # Run the app
     print("Starting InstaCard API server...")
-    print("API available at: http://localhost:5000/api")
     app.run(debug=True, host='0.0.0.0', port=5000)
