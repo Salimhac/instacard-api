@@ -2,6 +2,6 @@ Flask
 flask-cors
 SQLAlchemy
 psycopg2-binary
-gunicorn
 imagekitio
-dotenv
+python-dotenv
+gunicorn
